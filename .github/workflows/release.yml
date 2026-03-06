@@ -57,9 +57,9 @@ jobs:
             TARGET_DIR="target/${{ matrix.target }}/release"
           fi
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            echo "path=${TARGET_DIR}/simple-rust-asset-server.exe" >> $GITHUB_OUTPUT
+            echo "path=${TARGET_DIR}/microbridge.exe" >> $GITHUB_OUTPUT
           else
-            echo "path=${TARGET_DIR}/simple-rust-asset-server" >> $GITHUB_OUTPUT
+            echo "path=${TARGET_DIR}/microbridge" >> $GITHUB_OUTPUT
           fi
 
       - name: Rename Binary for Release

@@ -1,32 +1,24 @@
 use btleplug::api::{Central, Manager as _, Peripheral as _, ScanFilter};
 use btleplug::platform::{Manager, Peripheral};
 use clap::Parser;
-use futures::stream::StreamExt;
-use std::sync::Arc;
-use tokio::net::UdpSocket;
+use futures::{SinkExt, StreamExt};
 use tracing::{error, info, warn};
 use uuid::Uuid;
 
-// Nordic UART Service (NUS) UUIDs
-const NUS_SERVICE_UUID: Uuid = Uuid::from_u128(0x6e400001_b5a3_f393_e0a9_e50e24dcca9e);
+// Nordic UART Service (NUS) の UUID
 const NUS_RX_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
 const NUS_TX_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0a9_e50e24dcca9e);
 
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about = "Micro:bit BLE to UDP Bridge", long_about = None)]
 struct Args {
-    /// Name of the Micro:bit device(s) to connect to
+    /// 接続先のMicro:bitデバイス名
     #[arg(short, long, default_value = "BBC micro:bit")]
     device_name: String,
 
-    /// Local UDP base port to bind
-
+    /// ローカルのWebSocketサーバーのポート
     #[arg(short, long, default_value_t = 4000)]
-    bind_port: u16,
-
-    /// Destination UDP base port to send Micro:bit data to
-    #[arg(long, default_value_t = 5000)]
-    dest_port: u16,
+    port: u16,
 }
 
 #[tokio::main]
@@ -36,8 +28,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     info!("Starting MicroBridge (Multi-Device)...");
     info!("Target Device Name: {}", args.device_name);
-    info!("Base UDP Bind Port: {}", args.bind_port);
-    info!("Base UDP Dest Port: {}", args.dest_port);
+    info!("WebSocket Base Port: {}", args.port);
 
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
@@ -47,7 +38,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .ok_or("No Bluetooth adapters found")?;
 
-    // Even though we want OS-paired devices, starting a short scan helps update the OS peripheral cache.
+    // OSでペアリング済みのデバイスを対象とする場合でも、短時間のスキャンを行うことでOSのペリフェラルキャッシュの更新に役立つ。
     info!("Starting BLE scan to refresh device list...");
     central.start_scan(ScanFilter::default()).await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
@@ -73,7 +64,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tasks.push(task);
     }
 
-    // Wait for all bridge tasks
+    // すべてのブリッジタスクの完了を待機
     for task in tasks {
         let _ = task.await;
     }
@@ -105,15 +96,14 @@ async fn connect_and_setup(
     args: Args,
     index: u16,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let bind_port = args.bind_port + index;
-    let dest_port = args.dest_port + index;
+    let ws_port = args.port + index;
     
     let props = peripheral.properties().await?.unwrap_or_default();
     let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
     
     info!("[{}] Connecting to '{}'...", index, name);
     
-    // We retry connection a few times if it fails immediately in OS
+    // OSレベルですぐに失敗した場合は、接続を何度か再試行する
     let mut connected = false;
     for attempt in 1..=3 {
         if peripheral.connect().await.is_ok() {
@@ -150,65 +140,84 @@ async fn connect_and_setup(
          return Err(format!("Failed to subscribe to TX: {}", e).into());
     }
 
-    let bind_addr = format!("127.0.0.1:{}", bind_port);
-    let dest_addr = format!("127.0.0.1:{}", dest_port);
+    let bind_addr = format!("0.0.0.0:{}", ws_port);
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
+    info!("[{}] WebSocket server listening on ws://{}", index, bind_addr);
 
-    let udp_socket = Arc::new(UdpSocket::bind(&bind_addr).await?);
-    info!("[{}] UDP Socket bound to {}", index, bind_addr);
+    let (ble_tx, mut ble_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
+    let (ws_tx, _ws_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(32);
 
     let mut notification_stream = peripheral.notifications().await?;
+    let ws_tx_clone = ws_tx.clone();
+    let tx_uuid = tx_char.uuid;
 
-    // Relay BLE -> UDP
-    let ble_to_udp_socket = udp_socket.clone();
-    let dest_addr_clone = dest_addr.clone();
-    let ble_to_udp_task = tokio::spawn(async move {
-        info!("[{}] Started BLE -> UDP Relay (Dest: {})", index, dest_addr_clone);
+    // BLEの通知を読み取り、WebSocketクライアントにブロードキャストするタスク
+    let _ble_to_ws_task = tokio::spawn(async move {
         while let Some(data) = notification_stream.next().await {
-            if data.uuid == tx_char.uuid {
-                match ble_to_udp_socket.send_to(&data.value, &dest_addr_clone).await {
-                    Ok(size) => info!("[{}] Relayed {} bytes to UDP", index, size),
-                    Err(e) => error!("[{}] Failed to send UDP packet: {}", index, e),
-                }
+            if data.uuid == tx_uuid {
+                let _ = ws_tx_clone.send(data.value);
             }
         }
-        info!("[{}] BLE notification stream ended", index);
     });
 
-    // Relay UDP -> BLE
-    let udp_to_ble_socket = udp_socket.clone();
     let peripheral_clone = peripheral.clone();
-    let udp_to_ble_task = tokio::spawn(async move {
-        info!("[{}] Started UDP -> BLE Relay (Listen: {})", index, bind_addr);
-        let mut buf = vec![0u8; 1024];
-        loop {
-            match udp_to_ble_socket.recv_from(&mut buf).await {
-                Ok((size, addr)) => {
-                    info!("[{}] Received {} bytes from UDP ({})", index, size, addr);
-                    let payload = &buf[..size];
-                    match peripheral_clone
-                        .write(&rx_char, payload, btleplug::api::WriteType::WithoutResponse)
-                        .await
-                    {
-                        Ok(_) => info!("[{}] Relayed {} bytes to BLE", index, size),
-                        Err(e) => error!("[{}] Failed to write to BLE characteristic: {}", index, e),
-                    }
+    let rx_char_clone = rx_char.clone();
+    // mpscから読み取り、BLEに書き込むタスク
+    let _ws_to_ble_task = tokio::spawn(async move {
+        while let Some(data) = ble_rx.recv().await {
+            if let Err(e) = peripheral_clone
+                .write(&rx_char_clone, &data, btleplug::api::WriteType::WithoutResponse)
+                .await
+            {
+                error!("[{}] Failed to write to BLE: {}", index, e);
+            }
+        }
+    });
+
+    loop {
+        if let Ok((stream, addr)) = listener.accept().await {
+            info!("[{}] Client connected: {}", index, addr);
+            let ws_stream = tokio_tungstenite::accept_async(stream).await;
+            match ws_stream {
+                Ok(ws) => {
+                    let (mut write, mut read) = ws.split();
+                    let mut ws_rx = ws_tx.subscribe();
+                    let ble_tx_clone = ble_tx.clone();
+
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::select! {
+                                msg = ws_rx.recv() => {
+                                    match msg {
+                                        Ok(data) => {
+                                            if write.send(tokio_tungstenite::tungstenite::Message::Binary(data.into())).await.is_err() {
+                                                break;
+                                            }
+                                        }
+                                        Err(_) => break,
+                                    }
+                                }
+                                msg = read.next() => {
+                                    match msg {
+                                        Some(Ok(tokio_tungstenite::tungstenite::Message::Binary(data))) => {
+                                            let _ = ble_tx_clone.send(data.to_vec()).await;
+                                        }
+                                        Some(Ok(tokio_tungstenite::tungstenite::Message::Text(data))) => {
+                                            let _ = ble_tx_clone.send(data.as_str().as_bytes().to_vec()).await;
+                                        }
+                                        Some(Ok(tokio_tungstenite::tungstenite::Message::Close(_))) | None => break,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        info!("[{}] Client disconnected: {}", index, addr);
+                    });
                 }
                 Err(e) => {
-                    error!("[{}] Error receiving UDP packet: {}", index, e);
-                    break;
+                    error!("[{}] WebSocket handshake failed: {}", index, e);
                 }
             }
         }
-    });
-
-    tokio::select! {
-        _ = ble_to_udp_task => {
-            warn!("[{}] BLE to UDP task exited", index);
-        }
-        _ = udp_to_ble_task => {
-            warn!("[{}] UDP to BLE task exited", index);
-        }
     }
-
-    Ok(())
 }

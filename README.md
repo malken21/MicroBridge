@@ -1,18 +1,18 @@
 # MicroBridge
 
-Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low Energy (BLE) と UDP を用いて双方向通信を中継（ブリッジ）するRust製のサイドカープロセスです。
+Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low Energy (BLE) と WebSocket を用いて双方向通信を中継（ブリッジ）するRust製のサイドカープロセスです。
 
 ## 特徴
 
-- **BLE Nordic UART Service (NUS)** を使用し、Micro:bitのシリアル通信をUDPパケットに変換します。
-- **複数台のMicro:bit同時接続**に対応。OS（Windows等）ですでにペアリングされている複数のMicro:bitを自動検出し、それぞれ独立したUDPポートにルーティングします。
-- 検出されたデバイスごとに、指定したベースのUDPポートから自動でインクリメント（+1）してポートを割り当てます。
+- **BLE Nordic UART Service (NUS)** を使用し、Micro:bitのシリアル通信をWebSocketメッセージに変換します。
+- **複数台のMicro:bit同時接続**に対応。OS（Windows等）ですでにペアリングされている複数のMicro:bitを自動検出し、それぞれ独立したWebSocketポートにルーティングします。
+- 検出されたデバイスごとに、指定したベースのWebSocketポートから自動でインクリメント（+1）してポートを割り当てます。
 
 ## アーキテクチャ
 
-```
-[ Micro:bit #1 ] <---(BLE NUS)---> [ MicroBridge ] <---(UDP 4000/5000)---> [ ユーザーアプリケーション ]
-[ Micro:bit #2 ] <---(BLE NUS)---> [ MicroBridge ] <---(UDP 4001/5001)---> [ ユーザーアプリケーション ]
+```text
+[ Micro:bit #1 ] <---(BLE NUS)---> [ MicroBridge ] <---(WS 4000)---> [ ユーザーアプリケーション ]
+[ Micro:bit #2 ] <---(BLE NUS)---> [ MicroBridge ] <---(WS 4001)---> [ ユーザーアプリケーション ]
 ```
 
 ## 前提条件
@@ -40,10 +40,8 @@ cargo run --release -- [OPTIONS]
 
 - `-d, --device-name <DEVICE_NAME>`
   接続対象のMicro:bitのデバイス名に含まれる文字列。デフォルト: `BBC micro:bit`
-- `-b, --bind-port <BIND_PORT>`
-  PC側（ユーザーアプリ側）からのUDPパケットを受信するベースポート番号。デフォルト: `4000`
-- `--dest-port <DEST_PORT>`
-  PC側（ユーザーアプリ側）へUDPパケットを送信する宛先のベースポート番号。デフォルト: `5000`
+- `-p, --port <PORT>`
+  PC側（ユーザーアプリ側）と通信するWebSocketサーバのベースポート番号。デフォルト: `4000`
 
 ### 実行例
 
@@ -56,22 +54,22 @@ cargo run
 ベースポートを変更して起動:
 
 ```bash
-cargo run -- --bind-port 5000 --dest-port 6000
+cargo run -- --port 5000
 ```
 
-1台目のMicro:bitからのデータは `localhost:6000` に送信され、アプリ側から `localhost:5000` にUDPでデータを送ると1台目のMicro:bitに転送されます。
-2台目のMicro:bitはそれぞれ `6001`, `5001` と連番になります。
+1台目のMicro:bit用のWebSocketサーバは `ws://localhost:5000` で待ち受けを開始します。アプリ側からこのエンドポイントへ接続することで、双方向データ通信が可能になります。
+2台目のMicro:bitはそれぞれ `ws://localhost:5001` と連番になります。
 
 ## 通信のテスト
 
 1. Micro:bitに、Bluetoothで受信した文字列をそのまま返す（またはLEDに表示する）プログラムを書き込みます。
 2. 本Bridgeサーバーを起動します。
-3. 別のターミナルから `nc`（netcat）等のUDP通信ツールを使用してテストします。
+3. 別のターミナルから `wscat`（`npm install -g wscat`）等のWebSocket通信ツールを使用してテストします。
 
 ```bash
-# アプリケーションの代わりに手動でUDPパケットを送信
-nc -u 127.0.0.1 4000
+# アプリケーションの代わりに手動で接続と送信
+wscat -c ws://localhost:4000
 > Hello Microbit!
 ```
 
-上記を入力してMicro:bit側が反応し、さらに `nc -ul 5000` などの受信側ポートにデータが届くことを確認してください（複数デバイスの場合はポート 4001, 5001 なども合わせて確認）。
+上記を入力してMicro:bit側が反応し、さらにMicro:bitからのデータが手元のターミナルへ届くことを確認してください。

@@ -26,7 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    info!("Starting MicroBridge (Multi-Device)...");
+    info!("Starting microbridge (Multi-Device)...");
     info!("Target Device Name: {}", args.device_name);
     info!("WebSocket Base Port: {}", args.port);
 

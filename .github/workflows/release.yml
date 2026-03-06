@@ -31,6 +31,12 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Set lower case owner and repo name
+        run: |
+          echo "REPO_NAME=${GITHUB_REPOSITORY#*/}" >> $GITHUB_ENV
+          echo "REPO_NAME_LOW=${GITHUB_REPOSITORY#*/}" | tr '[:upper:]' '[:lower:]' > repo_name_low.txt
+          echo "REPO_NAME_LOW=$(cat repo_name_low.txt)" >> $GITHUB_ENV
+
       - name: Install System Dependencies (Ubuntu)
         if: startsWith(matrix.os, 'ubuntu')
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev pkg-config
@@ -57,21 +63,21 @@ jobs:
             TARGET_DIR="target/${{ matrix.target }}/release"
           fi
           if [[ "$RUNNER_OS" == "Windows" ]]; then
-            echo "path=${TARGET_DIR}/microbridge.exe" >> $GITHUB_OUTPUT
+            echo "path=${TARGET_DIR}/${{ env.REPO_NAME_LOW }}.exe" >> $GITHUB_OUTPUT
           else
-            echo "path=${TARGET_DIR}/microbridge" >> $GITHUB_OUTPUT
+            echo "path=${TARGET_DIR}/${{ env.REPO_NAME_LOW }}" >> $GITHUB_OUTPUT
           fi
 
       - name: Rename Binary for Release
         shell: bash
         run: |
-          cp ${{ steps.bin.outputs.path }} ${{ matrix.asset_name }}
+          cp ${{ steps.bin.outputs.path }} ${{ env.REPO_NAME_LOW }}-${{ matrix.asset_name }}
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.asset_name }}
-          path: ${{ matrix.asset_name }}
+          name: ${{ env.REPO_NAME_LOW }}-${{ matrix.asset_name }}
+          path: ${{ env.REPO_NAME_LOW }}-${{ matrix.asset_name }}
 
   release:
     name: Create GitHub Release

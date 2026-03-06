@@ -1,5 +1,5 @@
 [package]
-name = "MicroBridge"
+name = "microbridge"
 version = "0.1.7"
 edition = "2024"
 

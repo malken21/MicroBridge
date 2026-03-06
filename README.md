@@ -1,4 +1,4 @@
-# Simple-MicroBridge-Server
+# MicroBridge
 
 Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low Energy (BLE) と UDP を用いて双方向通信を中継（ブリッジ）するRust製のサイドカープロセスです。
 
@@ -11,8 +11,8 @@ Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low 
 ## アーキテクチャ
 
 ```
-[ Micro:bit #1 ] <---(BLE NUS)---> [ Simple-MicroBridge-Server ] <---(UDP 4000/5000)---> [ ユーザーアプリケーション ]
-[ Micro:bit #2 ] <---(BLE NUS)---> [ Simple-MicroBridge-Server ] <---(UDP 4001/5001)---> [ ユーザーアプリケーション ]
+[ Micro:bit #1 ] <---(BLE NUS)---> [ MicroBridge ] <---(UDP 4000/5000)---> [ ユーザーアプリケーション ]
+[ Micro:bit #2 ] <---(BLE NUS)---> [ MicroBridge ] <---(UDP 4001/5001)---> [ ユーザーアプリケーション ]
 ```
 
 ## 前提条件

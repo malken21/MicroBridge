@@ -34,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt::init();
 
     let args = Args::parse();
-    info!("Starting MicroBridge-Server (Multi-Device)...");
+    info!("Starting MicroBridge (Multi-Device)...");
     info!("Target Device Name: {}", args.device_name);
     info!("Base UDP Bind Port: {}", args.bind_port);
     info!("Base UDP Dest Port: {}", args.dest_port);

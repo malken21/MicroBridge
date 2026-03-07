@@ -75,10 +75,33 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
     for (index, peripheral) in peripherals.into_iter().enumerate() {
         let p_args = args.clone();
-        let shutdown_rx = shutdown_tx.subscribe();
+        let shutdown_tx_clone2 = shutdown_tx.clone();
         let task = tokio::spawn(async move {
-            if let Err(e) = connect_and_setup(&peripheral, p_args, index as u16, shutdown_rx).await {
-                eprintln!("Task {} failed: {}", index, e);
+            let mut shutdown_rx_for_sleep = shutdown_tx_clone2.subscribe();
+            loop {
+                let is_ok = {
+                    let rx = shutdown_tx_clone2.subscribe();
+                    let result = connect_and_setup(&peripheral, p_args.clone(), index as u16, rx).await;
+                    match result {
+                        Ok(_) => {
+                            println!("[{}] Task completed cleanly (shutdown).", index);
+                            true
+                        }
+                        Err(e) => {
+                            eprintln!("[{}] Task disconnected or error: {}. Retrying in 3 seconds...", index, e);
+                            false
+                        }
+                    }
+                };
+                if is_ok {
+                    break;
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(3)) => {}
+                    _ = shutdown_rx_for_sleep.recv() => {
+                        break;
+                    }
+                }
             }
         });
         tasks.push(task);
@@ -210,6 +233,25 @@ async fn connect_and_setup(
         }
     });
 
+    let peripheral_clone2 = peripheral.clone();
+    let disconnect_tx_clone3 = disconnect_tx.clone();
+    let connection_monitor_task = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            if let Ok(is_connected) = peripheral_clone2.is_connected().await {
+                if !is_connected {
+                    println!("[{}] Connection monitor detected disconnection.", index);
+                    let _ = disconnect_tx_clone3.send(()).await;
+                    break;
+                }
+            } else {
+                println!("[{}] Error checking connection status. Assuming disconnected.", index);
+                let _ = disconnect_tx_clone3.send(()).await;
+                break;
+            }
+        }
+    });
+
     loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
@@ -218,8 +260,10 @@ async fn connect_and_setup(
                 // サブタスク内で保持されているPeripheralやCharacteristicの参照を完全に破棄するため、タスクを強制終了して完了を待機
                 ble_to_ws_task.abort();
                 ws_to_ble_task.abort();
+                connection_monitor_task.abort();
                 let _ = ble_to_ws_task.await;
                 let _ = ws_to_ble_task.await;
+                let _ = connection_monitor_task.await;
 
                 println!("[{}] Unsubscribing from TX characteristic...", index);
                 let _ = peripheral.unsubscribe(&tx_char).await;
@@ -229,7 +273,11 @@ async fn connect_and_setup(
             }
             _ = disconnect_rx.recv() => {
                 eprintln!("[{}] Peripheral disconnected or unexpected error occurred. Exiting task...", index);
-                break;
+                ble_to_ws_task.abort();
+                ws_to_ble_task.abort();
+                connection_monitor_task.abort();
+                let _ = peripheral.disconnect().await;
+                return Err("Peripheral disconnected".into());
             }
             accept_res = listener.accept() => {
                 if let Ok((stream, addr)) = accept_res {

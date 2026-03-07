@@ -27,6 +27,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Target Device Name: {}", args.device_name);
     println!("WebSocket Base Port: {}", args.port);
 
+    run_bridge(args).await?;
+
+    println!("All bridge tasks have terminated. Dropping resources...");
+    
+    // 全てのリソース（Peripheral, Adapter, Manager）がここで Drop されるため
+    // Windows 側 (WinRT API) にデバイスの解放が行き渡るまでの完全なラグ期間を設ける
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    
+    println!("Shutdown sequence complete. Exiting.");
+    Ok(())
+}
+
+async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let manager = Manager::new().await?;
     let adapters = manager.adapters().await?;
 
@@ -35,10 +48,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .next()
         .ok_or("No Bluetooth adapters found")?;
 
-    // OSでペアリング済みのデバイスを対象とする場合でも、短時間のスキャンを行うことでOSのペリフェラルキャッシュの更新に役立つ。
     println!("Starting BLE scan to refresh device list...");
     central.start_scan(ScanFilter::default()).await?;
     tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    let _ = central.stop_scan().await;
 
     let peripherals = find_target_peripherals(&central, &args.device_name).await?;
 
@@ -76,7 +89,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = task.await;
     }
 
-    println!("All tasks completed. Exiting.");
     Ok(())
 }
 
@@ -160,8 +172,12 @@ async fn connect_and_setup(
     let ws_tx_clone = ws_tx.clone();
     let tx_uuid = tx_char.uuid;
 
+    let (disconnect_tx, mut disconnect_rx) = tokio::sync::mpsc::channel::<()>(1);
+    let disconnect_tx_clone1 = disconnect_tx.clone();
+    let disconnect_tx_clone2 = disconnect_tx.clone();
+
     // BLEの通知を読み取り、WebSocketクライアントにブロードキャストするタスク
-    let _ble_to_ws_task = tokio::spawn(async move {
+    let ble_to_ws_task = tokio::spawn(async move {
         while let Some(data) = notification_stream.next().await {
             if data.uuid == tx_uuid {
                 let msg = String::from_utf8_lossy(&data.value);
@@ -169,20 +185,27 @@ async fn connect_and_setup(
                 let _ = ws_tx_clone.send(data.value);
             }
         }
+        println!("[{}] BLE notification stream ended. Peripheral might be disconnected.", index);
+        let _ = disconnect_tx_clone1.send(()).await;
     });
 
     let peripheral_clone = peripheral.clone();
     let rx_char_clone = rx_char.clone();
     // mpscから読み取り、BLEに書き込むタスク
-    let _ws_to_ble_task = tokio::spawn(async move {
+    let ws_to_ble_task = tokio::spawn(async move {
         while let Some(data) = ble_rx.recv().await {
             let msg = String::from_utf8_lossy(&data);
             println!("[{}] Sending to BLE: {}", index, msg);
-            if let Err(e) = peripheral_clone
-                .write(&rx_char_clone, &data, btleplug::api::WriteType::WithoutResponse)
-                .await
-            {
-                eprintln!("[{}] Failed to write to BLE: {}", index, e);
+            // MTU制限超過による書き込みエラーを回避するため、20バイトごとに分割して送信
+            for chunk in data.chunks(20) {
+                if let Err(e) = peripheral_clone
+                    .write(&rx_char_clone, chunk, btleplug::api::WriteType::WithoutResponse)
+                    .await
+                {
+                    eprintln!("[{}] Failed to write chunk to BLE: {}", index, e);
+                    let _ = disconnect_tx_clone2.send(()).await;
+                    break;
+                }
             }
         }
     });
@@ -191,7 +214,21 @@ async fn connect_and_setup(
         tokio::select! {
             _ = shutdown_rx.recv() => {
                 println!("[{}] Received shutdown signal. Disconnecting peripheral...", index);
+                
+                // サブタスク内で保持されているPeripheralやCharacteristicの参照を完全に破棄するため、タスクを強制終了して完了を待機
+                ble_to_ws_task.abort();
+                ws_to_ble_task.abort();
+                let _ = ble_to_ws_task.await;
+                let _ = ws_to_ble_task.await;
+
+                println!("[{}] Unsubscribing from TX characteristic...", index);
+                let _ = peripheral.unsubscribe(&tx_char).await;
+
                 let _ = peripheral.disconnect().await;
+                break;
+            }
+            _ = disconnect_rx.recv() => {
+                eprintln!("[{}] Peripheral disconnected or unexpected error occurred. Exiting task...", index);
                 break;
             }
             accept_res = listener.accept() => {
@@ -214,7 +251,10 @@ async fn connect_and_setup(
                                                         break;
                                                     }
                                                 }
-                                                Err(_) => break,
+                                                Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                                                    eprintln!("[{}] WebSocket client lagged, skipped {} messages.", index, skipped);
+                                                }
+                                                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                                             }
                                         }
                                         msg = read.next() => {

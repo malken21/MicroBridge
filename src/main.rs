@@ -9,7 +9,7 @@ const NUS_RX_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400003_b5a3_f393_e0
 const NUS_TX_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0a9_e50e24dcca9e);
 
 #[derive(Parser, Debug, Clone)]
-#[command(author, version, about = "Micro:bit BLE to UDP Bridge", long_about = None)]
+#[command(author, version, about = "Micro:bit BLE to WebSocket Bridge", long_about = None)]
 struct Args {
     /// 接続先のMicro:bitの5文字の識別ID（例: zagic）
     /// 指定された場合は「BBC micro:bit [zagic]」を検索します。

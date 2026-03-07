@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MicroBridge WebSocket Debugger</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-primary: #f8fafc;
+            --text-secondary: #94a3b8;
+            --accent-color: #38bdf8;
+            --success-color: #22c55e;
+            --error-color: #ef4444;
+        }
+
+        body {
+            font-family: 'Inter', system-ui, -apple-system, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 800px;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin-bottom: 1.5rem;
+            color: var(--accent-color);
+            border-bottom: 1px solid var(--card-bg);
+            padding-bottom: 0.5rem;
+        }
+
+        .status-panel {
+            background-color: var(--card-bg);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+
+        .status-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background-color: var(--text-secondary);
+        }
+
+        .dot.connected {
+            background-color: var(--success-color);
+            box-shadow: 0 0 8px var(--success-color);
+        }
+
+        .dot.disconnected {
+            background-color: var(--error-color);
+        }
+
+        .log-container {
+            background-color: #000;
+            color: #00ff00;
+            font-family: 'Fira Code', 'Courier New', monospace;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            height: 400px;
+            overflow-y: auto;
+            font-size: 0.875rem;
+            line-height: 1.4;
+            border: 1px solid var(--card-bg);
+        }
+
+        .log-entry {
+            margin-bottom: 0.25rem;
+        }
+
+        .log-time {
+            color: var(--text-secondary);
+            margin-right: 0.5rem;
+        }
+
+        .controls {
+            margin-top: 1rem;
+            display: flex;
+            gap: 1rem;
+        }
+
+        button {
+            padding: 0.5rem 1rem;
+            border-radius: 0.25rem;
+            border: none;
+            background-color: var(--accent-color);
+            color: white;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        button:disabled {
+            background-color: var(--text-secondary);
+            cursor: not-allowed;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <h1>MicroBridge WebSocket Debugger</h1>
+
+        <div class="status-panel">
+            <div class="status-indicator">
+                <div id="status-dot" class="dot"></div>
+                <span id="status-text">Disconnected</span>
+            </div>
+            <div>
+                Port: <span id="port-display">4000</span>
+            </div>
+        </div>
+
+        <div id="log" class="log-container">
+            <div class="log-entry">Waiting for connection...</div>
+        </div>
+
+        <div class="controls">
+            <button id="connect-btn">Connect</button>
+            <button id="clear-btn">Clear Logs</button>
+        </div>
+    </div>
+
+    <script>
+        const logContainer = document.getElementById('log');
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const connectBtn = document.getElementById('connect-btn');
+        const clearBtn = document.getElementById('clear-btn');
+
+        let ws = null;
+
+        function addLog(message) {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry';
+            const time = new Array(new Date().toLocaleTimeString()).join('');
+            entry.innerHTML = `<span class="log-time">[${new Date().toLocaleTimeString()}]</span> ${message}`;
+            logContainer.appendChild(entry);
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function connect() {
+            if (ws) ws.close();
+
+            addLog('Connecting to ws://localhost:4000...');
+            ws = new WebSocket('ws://localhost:4000');
+
+            ws.onopen = () => {
+                statusDot.className = 'dot connected';
+                statusText.innerText = 'Connected';
+                connectBtn.innerText = 'Disconnect';
+                addLog('WebSocket connection established.');
+            };
+
+            ws.onclose = () => {
+                statusDot.className = 'dot disconnected';
+                statusText.innerText = 'Disconnected';
+                connectBtn.innerText = 'Connect';
+                addLog('WebSocket connection closed.');
+                ws = null;
+            };
+
+            ws.onerror = (error) => {
+                addLog(`<span style="color: var(--error-color)">Error: Connection failed. Ensure MicroBridge is running.</span>`);
+            };
+
+            ws.onmessage = (event) => {
+                if (event.data instanceof Blob) {
+                    event.data.text().then(text => {
+                        addLog(`Received (Binary/Blob): ${text}`);
+                    });
+                } else {
+                    addLog(`Received: ${event.data}`);
+                }
+            };
+        }
+
+        connectBtn.onclick = () => {
+            if (ws) {
+                ws.close();
+            } else {
+                connect();
+            }
+        };
+
+        clearBtn.onclick = () => {
+            logContainer.innerHTML = '';
+        };
+    </script>
+</body>
+
+</html>

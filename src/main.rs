@@ -36,16 +36,16 @@ struct Args {
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
-    println!("Starting microbridge (Multi-Device)...");
+    println!("Starting microbridge...");
     println!("Target Device Name: {}", args.name);
     if let Some(id) = &args.id {
         println!("Target Device ID: {}", id);
     }
-    println!("WebSocket Base Port: {}", args.port);
+    println!("WebSocket Port: {}", args.port);
 
     run_bridge(args).await?;
 
-    println!("All bridge tasks have terminated. Dropping resources...");
+    println!("Bridge task has terminated. Dropping resources...");
     
     // 全てのリソース（Peripheral, Adapter, Manager）がここで Drop されるため
     // Windows 側 (WinRT API) にデバイスの解放が行き渡るまでの完全なラグ期間を設ける
@@ -69,80 +69,59 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let adapters = manager.adapters().await?;
     let central = adapters.into_iter().next().ok_or("No Bluetooth adapters found")?;
 
-    let peripherals = loop {
-        println!("Starting BLE scan to detect devices...");
+    let mut current_peripheral = loop {
+        println!("Starting BLE scan to detect device...");
         central.start_scan(ScanFilter::default()).await?;
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
         let _ = central.stop_scan().await;
 
-        let found = find_target_peripherals(&central, &args).await?;
-        if !found.is_empty() {
-            break found;
+        if let Some(peripheral) = find_target_peripheral(&central, &args).await? {
+            break peripheral;
         }
         let target_desc = args.id.as_deref().unwrap_or(&args.name);
-        println!("No devices found matching '{}'. Retrying in 5 seconds...", target_desc);
+        println!("No device found matching '{}'. Retrying in 5 seconds...", target_desc);
         tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
     };
 
-    println!("Found {} devices. Starting bridge tasks...", peripherals.len());
+    println!("Device found. Starting bridge task...");
 
-    let mut tasks = Vec::new();
+    let mut shutdown_rx = shutdown_tx.subscribe();
+    loop {
+        let rx = shutdown_tx.subscribe();
+        let result = connect_and_setup(&current_peripheral, args.clone(), rx).await;
 
-    for (index, peripheral) in peripherals.into_iter().enumerate() {
-        let p_args = args.clone();
-        let shutdown_tx_task = shutdown_tx.clone();
-        let central_clone = central.clone();
-        
-        // WindowsではPeripheralがSendではないため、tokio::spawnを使わずに
-        // 現在のスレッド（ランタイム内）で並行実行する
-        tasks.push(async move {
-            let mut shutdown_rx = shutdown_tx_task.subscribe();
-            let mut current_peripheral = peripheral;
+        match result {
+            Ok(_) => {
+                println!("Bridge task completed cleanly (shutdown).");
+                break;
+            }
+            Err(e) => {
+                eprintln!("Disconnected or error: {}. Retrying in 5 seconds...", e);
+            }
+        }
 
-            loop {
-                let rx = shutdown_tx_task.subscribe();
-                let result = connect_and_setup(&current_peripheral, p_args.clone(), index as u16, rx).await;
+        tokio::select! {
+            _ = shutdown_rx.recv() => break,
+            _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+                println!("Refreshing device list before reconnection attempt...");
+                let _ = central.start_scan(ScanFilter::default()).await;
+                tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                let _ = central.stop_scan().await;
 
-                match result {
-                    Ok(_) => {
-                        println!("[{}] Task completed cleanly (shutdown).", index);
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("[{}] Disconnected or error: {}. Retrying in 5 seconds...", index, e);
-                    }
-                }
-
-                tokio::select! {
-                    _ = shutdown_rx.recv() => break,
-                    _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-                        println!("[{}] Refreshing device list before reconnection attempt...", index);
-                        let _ = central_clone.start_scan(ScanFilter::default()).await;
-                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-                        let _ = central_clone.stop_scan().await;
-
-                        if let Ok(latest_peripherals) = find_target_peripherals(&central_clone, &p_args).await {
-                             if let Some(new_p) = latest_peripherals.into_iter().nth(index) {
-                                 current_peripheral = new_p;
-                             }
-                        }
-                    }
+                if let Ok(Some(new_p)) = find_target_peripheral(&central, &args).await {
+                    current_peripheral = new_p;
                 }
             }
-        });
+        }
     }
-
-    // 全てのデバイスを並行して実行
-    futures::future::join_all(tasks).await;
 
     Ok(())
 }
 
-async fn find_target_peripherals(
+async fn find_target_peripheral(
     central: &btleplug::platform::Adapter,
     args: &Args,
-) -> Result<Vec<Peripheral>, Box<dyn std::error::Error>> {
-    let mut matched = Vec::new();
+) -> Result<Option<Peripheral>, Box<dyn std::error::Error>> {
     let peripherals = central.peripherals().await?;
 
     for peripheral in peripherals {
@@ -174,25 +153,21 @@ async fn find_target_peripherals(
         }
 
         if is_match {
-            matched.push(peripheral);
+            return Ok(Some(peripheral));
         }
     }
-    // デバイスIDでソートすることで、複数デバイス時の index の一貫性をある程度保つ
-    matched.sort_by_key(|p| p.id());
-    Ok(matched)
+    Ok(None)
 }
 
 async fn connect_and_setup(
     peripheral: &Peripheral,
     args: Args,
-    index: u16,
     mut shutdown_rx: tokio::sync::broadcast::Receiver<()>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let ws_port = args.port + index;
     let props = peripheral.properties().await?.unwrap_or_default();
     let name = props.local_name.unwrap_or_else(|| "Unknown".to_string());
     
-    println!("[{}] Attempting to connect to '{}'...", index, name);
+    println!("Attempting to connect to '{}'...", name);
     
     let mut connected = false;
     for attempt in 1..=3 {
@@ -200,15 +175,15 @@ async fn connect_and_setup(
             connected = true;
             break;
         }
-        eprintln!("[{}] Connection attempt {} failed.", index, attempt);
+        eprintln!("Connection attempt {} failed.", attempt);
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
     
     if !connected {
         return Err("Failed to connect".into());
     }
-
-    println!("[{}] Connected. Discovering services...", index);
+ 
+    println!("Connected. Discovering services...");
     peripheral.discover_services().await?;
 
     let chars = peripheral.characteristics();
@@ -217,9 +192,9 @@ async fn connect_and_setup(
 
     peripheral.subscribe(&tx_char).await?;
 
-    let bind_addr = format!("0.0.0.0:{}", ws_port);
+    let bind_addr = format!("0.0.0.0:{}", args.port);
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
-    println!("[{}] WebSocket listening on ws://{}", index, bind_addr);
+    println!("WebSocket listening on ws://{}", bind_addr);
 
     let (ble_tx, mut ble_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(32);
     let (ws_tx, _ws_rx) = tokio::sync::broadcast::channel::<Vec<u8>>(32);
@@ -236,11 +211,11 @@ async fn connect_and_setup(
         while let Some(data) = notification_stream.next().await {
             if data.uuid == tx_uuid {
                 let msg = String::from_utf8_lossy(&data.value);
-                println!("[{}] Received from BLE: {}", index, msg);
+                println!("Received from BLE: {}", msg);
                 let _ = ws_tx_clone.send(data.value);
             }
         }
-        println!("[{}] Notification stream ended.", index);
+        println!("Notification stream ended.");
         let _ = disconnect_tx_ble.send(()).await;
     });
 
@@ -251,7 +226,7 @@ async fn connect_and_setup(
     let ws_to_ble_task = tokio::spawn(async move {
         while let Some(data) = ble_rx.recv().await {
             let msg = String::from_utf8_lossy(&data);
-            println!("[{}] Sending to BLE: {}", index, msg);
+            println!("Sending to BLE: {}", msg);
             for chunk in data.chunks(20) {
                 if let Err(_) = peripheral_write.write(&rx_char_write, chunk, btleplug::api::WriteType::WithoutResponse).await {
                     let _ = disconnect_tx_ws.send(()).await;
@@ -269,7 +244,7 @@ async fn connect_and_setup(
             tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
             if let Ok(connected) = peripheral_monitor.is_connected().await {
                 if !connected {
-                    println!("[{}] Connection lost (polled).", index);
+                    println!("Connection lost (polled).");
                     let _ = disconnect_tx_monitor.send(()).await;
                     break;
                 }
@@ -280,16 +255,16 @@ async fn connect_and_setup(
     let res = loop {
         tokio::select! {
             _ = shutdown_rx.recv() => {
-                println!("[{}] Shutting down...", index);
+                println!("Shutting down...");
                 break Ok(());
             }
             _ = disconnect_rx.recv() => {
-                println!("[{}] Disconnection detected.", index);
+                println!("Disconnection detected.");
                 break Err("Disconnected".into());
             }
             accept_res = listener.accept() => {
                 if let Ok((stream, addr)) = accept_res {
-                    println!("[{}] Client connected: {}", index, addr);
+                    println!("Client connected: {}", addr);
                     let ws_tx_sub = ws_tx.clone();
                     let ble_tx_sub = ble_tx.clone();
                     tokio::spawn(async move {
@@ -316,7 +291,7 @@ async fn connect_and_setup(
                                 }
                             }
                         }
-                        println!("[{}] Client disconnected: {}", index, addr);
+                        println!("Client disconnected: {}", addr);
                     });
                 }
             }
@@ -329,3 +304,4 @@ async fn connect_and_setup(
     let _ = peripheral.disconnect().await;
     res
 }
+

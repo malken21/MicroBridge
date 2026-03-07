@@ -42,9 +42,9 @@ cargo run --release -- [OPTIONS]
   接続先のMicro:bitの5文字の識別ID（例: `zagic`）。指定された場合は「BBC micro:bit [zagic]」を完全一致で検索します。
 - `-n, --name <NAME>`
   接続対象のMicro:bitのデバイス名に含まれる文字列（部分一致）。デフォルト: `BBC micro:bit`
-- `--exact`
+- `-e, --exact`
   デバイス名（`--name`で指定した文字列）の完全一致を要求します。
-- `--mac <MAC>`
+- `-m, --mac <MAC>`
   接続先のMACアドレス（Windowsの場合は内部のデバイスID）で特定します。
 - `-p, --port <PORT>`
   PC側（ユーザーアプリ側）と通信するWebSocketサーバのベースポート番号。デフォルト: `4000`
@@ -63,8 +63,8 @@ cargo run
 cargo run -- --port 5000
 ```
 
-1台目のMicro:bit用のWebSocketサーバは `ws://localhost:5000` で待ち受けを開始します。アプリ側からこのエンドポイントへ接続することで、双方向データ通信が可能になります。
-2台目のMicro:bitはそれぞれ `ws://localhost:5001` と連番になります。
+1台目のMicro:bit用のWebSocketサーバは `ws://localhost:4000` で待ち受けを開始します。アプリ側からこのエンドポイントへ接続することで、双方向データ通信が可能になります。
+2台目以降のMicro:bitは、ポート番号が連番（4001, 4002...）になります。
 
 ## 通信のテスト
 

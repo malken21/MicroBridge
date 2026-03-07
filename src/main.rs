@@ -11,9 +11,22 @@ const NUS_TX_CHARACTERISTIC_UUID: Uuid = Uuid::from_u128(0x6e400002_b5a3_f393_e0
 #[derive(Parser, Debug, Clone)]
 #[command(author, version, about = "Micro:bit BLE to UDP Bridge", long_about = None)]
 struct Args {
-    /// 接続先のMicro:bitデバイス名
-    #[arg(short, long, default_value = "BBC micro:bit")]
-    device_name: String,
+    /// 接続先のMicro:bitの5文字の識別ID（例: zagic）
+    /// 指定された場合は「BBC micro:bit [zagic]」を検索します。
+    #[arg(short, long)]
+    id: Option<String>,
+
+    /// 接続先のMicro:bitデバイス名（部分一致）
+    #[arg(short = 'n', long, default_value = "BBC micro:bit")]
+    name: String,
+
+    /// デバイス名の完全一致を要求する
+    #[arg(short, long)]
+    exact: bool,
+
+    /// 接続先のMACアドレス（またはデバイスID）で特定する
+    #[arg(short, long)]
+    mac: Option<String>,
 
     /// ローカルのWebSocketサーバーのポート
     #[arg(short, long, default_value_t = 4000)]
@@ -24,7 +37,10 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
     println!("Starting microbridge (Multi-Device)...");
-    println!("Target Device Name: {}", args.device_name);
+    println!("Target Device Name: {}", args.name);
+    if let Some(id) = &args.id {
+        println!("Target Device ID: {}", id);
+    }
     println!("WebSocket Base Port: {}", args.port);
 
     run_bridge(args).await?;
@@ -53,16 +69,20 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let adapters = manager.adapters().await?;
     let central = adapters.into_iter().next().ok_or("No Bluetooth adapters found")?;
 
-    println!("Starting BLE scan to detect devices...");
-    central.start_scan(ScanFilter::default()).await?;
-    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-    let _ = central.stop_scan().await;
+    let peripherals = loop {
+        println!("Starting BLE scan to detect devices...");
+        central.start_scan(ScanFilter::default()).await?;
+        tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+        let _ = central.stop_scan().await;
 
-    let peripherals = find_target_peripherals(&central, &args.device_name).await?;
-    if peripherals.is_empty() {
-        println!("No devices found matching '{}'.", args.device_name);
-        return Ok(());
-    }
+        let found = find_target_peripherals(&central, &args).await?;
+        if !found.is_empty() {
+            break found;
+        }
+        let target_desc = args.id.as_deref().unwrap_or(&args.name);
+        println!("No devices found matching '{}'. Retrying in 5 seconds...", target_desc);
+        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+    };
 
     println!("Found {} devices. Starting bridge tasks...", peripherals.len());
 
@@ -71,14 +91,17 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     for (index, peripheral) in peripherals.into_iter().enumerate() {
         let p_args = args.clone();
         let shutdown_tx_task = shutdown_tx.clone();
+        let central_clone = central.clone();
         
         // WindowsではPeripheralがSendではないため、tokio::spawnを使わずに
         // 現在のスレッド（ランタイム内）で並行実行する
         tasks.push(async move {
             let mut shutdown_rx = shutdown_tx_task.subscribe();
+            let mut current_peripheral = peripheral;
+
             loop {
                 let rx = shutdown_tx_task.subscribe();
-                let result = connect_and_setup(&peripheral, p_args.clone(), index as u16, rx).await;
+                let result = connect_and_setup(&current_peripheral, p_args.clone(), index as u16, rx).await;
 
                 match result {
                     Ok(_) => {
@@ -93,7 +116,16 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
                 tokio::select! {
                     _ = shutdown_rx.recv() => break,
                     _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
-                        println!("[{}] Retrying connection...", index);
+                        println!("[{}] Refreshing device list before reconnection attempt...", index);
+                        let _ = central_clone.start_scan(ScanFilter::default()).await;
+                        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                        let _ = central_clone.stop_scan().await;
+
+                        if let Ok(latest_peripherals) = find_target_peripherals(&central_clone, &p_args).await {
+                             if let Some(new_p) = latest_peripherals.into_iter().nth(index) {
+                                 current_peripheral = new_p;
+                             }
+                        }
                     }
                 }
             }
@@ -108,18 +140,41 @@ async fn run_bridge(args: Args) -> Result<(), Box<dyn std::error::Error>> {
 
 async fn find_target_peripherals(
     central: &btleplug::platform::Adapter,
-    target_name: &str,
+    args: &Args,
 ) -> Result<Vec<Peripheral>, Box<dyn std::error::Error>> {
     let mut matched = Vec::new();
     let peripherals = central.peripherals().await?;
 
     for peripheral in peripherals {
-        if let Some(properties) = peripheral.properties().await? {
-            if let Some(local_name) = properties.local_name {
-                if local_name.contains(target_name) {
-                    matched.push(peripheral);
+        let mut is_match = false;
+        
+        if let Some(target_mac) = &args.mac {
+            if peripheral.id().to_string() == *target_mac {
+                is_match = true;
+            }
+        } else if let Some(target_id) = &args.id {
+            let expected_name = format!("BBC micro:bit [{}]", target_id);
+            if let Some(properties) = peripheral.properties().await? {
+                if let Some(local_name) = properties.local_name {
+                    if local_name == expected_name {
+                        is_match = true;
+                    }
                 }
             }
+        } else if let Some(properties) = peripheral.properties().await? {
+            if let Some(local_name) = properties.local_name {
+                if args.exact {
+                    if local_name == args.name {
+                        is_match = true;
+                    }
+                } else if local_name.contains(&args.name) {
+                    is_match = true;
+                }
+            }
+        }
+
+        if is_match {
+            matched.push(peripheral);
         }
     }
     // デバイスIDでソートすることで、複数デバイス時の index の一貫性をある程度保つ
@@ -180,6 +235,8 @@ async fn connect_and_setup(
     let ble_to_ws_task = tokio::spawn(async move {
         while let Some(data) = notification_stream.next().await {
             if data.uuid == tx_uuid {
+                let msg = String::from_utf8_lossy(&data.value);
+                println!("[{}] Received from BLE: {}", index, msg);
                 let _ = ws_tx_clone.send(data.value);
             }
         }
@@ -193,6 +250,8 @@ async fn connect_and_setup(
     let disconnect_tx_ws = disconnect_tx.clone();
     let ws_to_ble_task = tokio::spawn(async move {
         while let Some(data) = ble_rx.recv().await {
+            let msg = String::from_utf8_lossy(&data);
+            println!("[{}] Sending to BLE: {}", index, msg);
             for chunk in data.chunks(20) {
                 if let Err(_) = peripheral_write.write(&rx_char_write, chunk, btleplug::api::WriteType::WithoutResponse).await {
                     let _ = disconnect_tx_ws.send(()).await;

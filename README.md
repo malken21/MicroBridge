@@ -5,14 +5,13 @@ Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low 
 ## 特徴
 
 - **BLE Nordic UART Service (NUS)** を使用し、Micro:bitのシリアル通信をWebSocketメッセージに変換します。
-- **複数台のMicro:bit同時接続**に対応。OS（Windows等）ですでにペアリングされている複数のMicro:bitを自動検出し、それぞれ独立したWebSocketポートにルーティングします。
-- 検出されたデバイスごとに、指定したベースのWebSocketポートから自動でインクリメント（+1）してポートを割り当てます。
+- OS（Windows等）ですでにペアリングされている Micro:bit を自動検出し、WebSocket ポートにルーティングします。
+- 単一の Micro:bit との安定した通信に特化しており、切断時の自動再試行機能を備えています。
 
 ## アーキテクチャ
 
 ```text
-[ Micro:bit #1 ] <---(BLE NUS)---> [ microbridge ] <---(WS 4000)---> [ ユーザーアプリケーション ]
-[ Micro:bit #2 ] <---(BLE NUS)---> [ microbridge ] <---(WS 4001)---> [ ユーザーアプリケーション ]
+[ Micro:bit ] <---(BLE NUS)---> [ microbridge ] <---(WS 4000)---> [ ユーザーアプリケーション ]
 ```
 
 ## 前提条件
@@ -20,7 +19,7 @@ Micro:bit とローカルPC上のアプリケーション間で、Bluetooth Low 
 1. **Rustのインストール**: `cargo` コマンドが使用できること
 2. **Micro:bit側の準備**:
    - MakeCode等で「Bluetooth UART サービス」を有効化したプログラムを書き込んでおいてください。
-   - **重要**: 使用するすべてのMicro:bitを、事前にPCのOS（Bluetooth設定画面）からペアリングしておいてください。ペアリングされていないデバイスは検出されません。
+   - **重要**: 使用する Micro:bit を、事前にPCのOS（Bluetooth設定画面）からペアリングしておいてください。ペアリングされていないデバイスは検出されません。
 
 ## ビルド
 
@@ -30,7 +29,7 @@ cargo build --release
 
 ## 使用方法
 
-起動すると、指定したデバイス名（デフォルトは `BBC micro:bit`）を持つペアリング済みデバイスを検索し、順次接続します。
+起動すると、指定したデバイス名（デフォルトは `BBC micro:bit`）を持つペアリング済みデバイスを検索し、接続します。
 
 ```bash
 cargo run --release -- [OPTIONS]
@@ -47,7 +46,7 @@ cargo run --release -- [OPTIONS]
 - `-m, --mac <MAC>`
   接続先のMACアドレス（Windowsの場合は内部のデバイスID）で特定します。
 - `-p, --port <PORT>`
-  PC側（ユーザーアプリ側）と通信するWebSocketサーバのベースポート番号。デフォルト: `4000`
+  PC側（ユーザーアプリ側）と通信するWebSocketサーバのポート番号。デフォルト: `4000`
 
 ### 実行例
 
@@ -57,14 +56,13 @@ cargo run --release -- [OPTIONS]
 cargo run
 ```
 
-ベースポートを変更して起動:
+ポートを指定して起動:
 
 ```bash
 cargo run -- --port 5000
 ```
 
-1台目のMicro:bit用のWebSocketサーバは `ws://localhost:4000` で待ち受けを開始します。アプリ側からこのエンドポイントへ接続することで、双方向データ通信が可能になります。
-2台目以降のMicro:bitは、ポート番号が連番（4001, 4002...）になります。
+Micro:bit 用のWebSocketサーバは `ws://localhost:4000` で待ち受けを開始します。アプリ側からこのエンドポイントへ接続することで、双方向データ通信が可能になります。
 
 ## 通信のテスト
 

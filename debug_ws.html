@@ -7,143 +7,172 @@
     <title>MicroBridge WebSocket Debugger</title>
     <style>
         :root {
-            --bg-color: #0f172a;
-            --card-bg: #1e293b;
-            --text-primary: #f8fafc;
-            --text-secondary: #94a3b8;
-            --accent-color: #38bdf8;
-            --success-color: #22c55e;
-            --error-color: #ef4444;
+            --xp-blue-dark: #0058e6;
+            --xp-blue-light: #3a93ff;
+            --xp-blue-title: linear-gradient(to bottom, #0058e6 0%, #3a93ff 10%, #0058e6 20%, #0058e6 85%, #0036ad 100%);
+            --xp-bg: #ece9d8;
+            --xp-window-border: #0054e3;
+            --xp-button-bg: linear-gradient(to bottom, #ffffff 0%, #e0e0e0 100%);
+            --xp-button-border: #003c74;
+            --error-color: #ff0000;
         }
 
         body {
-            font-family: 'Inter', system-ui, -apple-system, sans-serif;
-            background-color: var(--bg-color);
-            color: var(--text-primary);
+            font-family: 'Tahoma', 'Segoe UI', sans-serif;
+            background-color: #316ac5;
+            /* Windows XP Default Desktop Color */
             margin: 0;
-            padding: 2rem;
+            padding: 1rem;
             display: flex;
-            flex-direction: column;
+            justify-content: center;
             align-items: center;
+            height: 100vh;
+            overflow: hidden;
+            box-sizing: border-box;
         }
 
-        .container {
+        .window {
+            background-color: var(--xp-bg);
+            border: 3px solid var(--xp-window-border);
+            border-top-left-radius: 8px;
+            border-top-right-radius: 8px;
+            box-shadow: 2px 2px 10px rgba(0, 0, 0, 0.3);
             width: 100%;
             max-width: 800px;
+            overflow: hidden;
         }
 
-        h1 {
-            font-size: 1.5rem;
-            margin-bottom: 1.5rem;
-            color: var(--accent-color);
-            border-bottom: 1px solid var(--card-bg);
-            padding-bottom: 0.5rem;
-        }
-
-        .status-panel {
-            background-color: var(--card-bg);
-            padding: 1rem;
-            border-radius: 0.5rem;
-            margin-bottom: 1rem;
+        .title-bar {
+            background: var(--xp-blue-title);
+            padding: 4px 8px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+            color: white;
+            font-weight: bold;
+            text-shadow: 1px 1px 1px #000;
+            height: 25px;
+        }
+
+        .title-bar-text {
+            font-size: 13px;
+        }
+
+        .window-content {
+            padding: 12px;
+        }
+
+        .status-panel {
+            background-color: #fff;
+            border: 1px inset #808080;
+            padding: 4px 8px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 11px;
         }
 
         .status-indicator {
             display: flex;
             align-items: center;
-            gap: 0.5rem;
+            gap: 6px;
         }
 
         .dot {
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            background-color: var(--text-secondary);
+            width: 10px;
+            height: 10px;
+            border: 1px solid #000;
+            background-color: #ccc;
         }
 
         .dot.connected {
-            background-color: var(--success-color);
-            box-shadow: 0 0 8px var(--success-color);
+            background-color: #0f0;
+            box-shadow: 0 0 4px #0f0;
         }
 
         .dot.disconnected {
-            background-color: var(--error-color);
+            background-color: #f00;
         }
 
         .log-container {
-            background-color: #000;
-            color: #00ff00;
-            font-family: 'Fira Code', 'Courier New', monospace;
-            padding: 1rem;
-            border-radius: 0.5rem;
+            background-color: #fff;
+            color: #000;
+            font-family: 'Courier New', monospace;
+            padding: 6px;
+            border: 2px inset #808080;
             height: 400px;
-            overflow-y: auto;
-            font-size: 0.875rem;
-            line-height: 1.4;
-            border: 1px solid var(--card-bg);
+            overflow-y: scroll;
+            font-size: 12px;
+            line-height: 1.2;
         }
 
         .log-entry {
-            margin-bottom: 0.25rem;
+            margin-bottom: 2px;
+            border-bottom: 1px solid #f0f0f0;
         }
 
         .log-time {
-            color: var(--text-secondary);
-            margin-right: 0.5rem;
+            color: #0000ff;
+            margin-right: 4px;
         }
 
         .controls {
-            margin-top: 1rem;
+            margin-top: 12px;
             display: flex;
-            gap: 1rem;
+            gap: 8px;
+            justify-content: flex-end;
         }
 
-        button {
-            padding: 0.5rem 1rem;
-            border-radius: 0.25rem;
-            border: none;
-            background-color: var(--accent-color);
-            color: white;
-            font-weight: 600;
+        button.xp-button {
+            padding: 4px 16px;
+            border: 1px solid var(--xp-button-border);
+            border-radius: 3px;
+            background: var(--xp-button-bg);
+            color: #000;
+            font-family: 'Tahoma', sans-serif;
+            font-size: 12px;
             cursor: pointer;
-            transition: opacity 0.2s;
+            box-shadow: inset -1px -1px 1px #808080, inset 1px 1px 1px #fff;
         }
 
-        button:hover {
-            opacity: 0.9;
+        button.xp-button:active {
+            box-shadow: inset 1px 1px 1px #808080, inset -1px -1px 1px #fff;
+            padding: 5px 15px 3px 17px;
         }
 
-        button:disabled {
-            background-color: var(--text-secondary);
+        button.xp-button:disabled {
+            color: #808080;
             cursor: not-allowed;
         }
     </style>
 </head>
 
 <body>
-    <div class="container">
-        <h1>MicroBridge WebSocket Debugger</h1>
+    <div class="window">
+        <div class="title-bar">
+            <div class="title-bar-text">MicroBridge WebSocket Debugger</div>
 
-        <div class="status-panel">
-            <div class="status-indicator">
-                <div id="status-dot" class="dot"></div>
-                <span id="status-text">Disconnected</span>
-            </div>
-            <div>
-                Port: <span id="port-display">4000</span>
-            </div>
         </div>
+        <div class="window-content">
+            <div class="status-panel">
+                <div class="status-indicator">
+                    <div id="status-dot" class="dot"></div>
+                    <span id="status-text">Disconnected</span>
+                </div>
+                <div>
+                    Port: <span id="port-display">4000</span>
+                </div>
+            </div>
 
-        <div id="log" class="log-container">
-            <div class="log-entry">Waiting for connection...</div>
-        </div>
+            <div id="log" class="log-container">
+                <div class="log-entry">Waiting for connection...</div>
+            </div>
 
-        <div class="controls">
-            <button id="connect-btn">Connect</button>
-            <button id="clear-btn">Clear Logs</button>
+            <div class="controls">
+                <button id="connect-btn" class="xp-button">Connect</button>
+                <button id="clear-btn" class="xp-button">Clear Logs</button>
+            </div>
         </div>
     </div>
 
@@ -159,7 +188,6 @@
         function addLog(message) {
             const entry = document.createElement('div');
             entry.className = 'log-entry';
-            const time = new Array(new Date().toLocaleTimeString()).join('');
             entry.innerHTML = `<span class="log-time">[${new Date().toLocaleTimeString()}]</span> ${message}`;
             logContainer.appendChild(entry);
             logContainer.scrollTop = logContainer.scrollHeight;
